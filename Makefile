@@ -13,7 +13,6 @@ python: all
 
 all: $(NAME).pc
 	@$(MAKE) -C src
-	@$(MAKE) -C test
 	@$(MAKE) -C examples
 
 runtests: all
