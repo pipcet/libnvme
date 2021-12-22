@@ -36,6 +36,9 @@ include ../Makefile.quiet
 
 all: $(all_targets)
 
+$(CCANDIR)tools/configurator/configurator: $(CCANDIR)/tools/configurator/configurator.c
+	cc -I $(CCANDIR) -o $@ $<
+
 $(CCANDIR)config.h: $(CCANDIR)tools/configurator/configurator
 	$< > $@
 
