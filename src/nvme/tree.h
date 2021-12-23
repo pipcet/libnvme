@@ -106,6 +106,21 @@ const char *nvme_host_get_hostnqn(nvme_host_t h);
 const char *nvme_host_get_hostid(nvme_host_t h);
 
 /**
+ * nvme_host_get_dhchap_key() - return host key
+ * @h: Host for which the key should be returned
+ *
+ * Return: DH-HMAC-CHAP host key or NULL if not set
+ */
+const char *nvme_host_get_dhchap_key(nvme_host_t h);
+
+/**
+ * nvme_host_set_dhchap_key() - set host key
+ * @h: Host for which the key should be set
+ * @key: DH-HMAC-CHAP Key to set or NULL to clear existing key
+ */
+void nvme_host_set_dhchap_key(nvme_host_t h, const char *key);
+
+/**
  * nvme_default_host() -
  * @r:
  *
@@ -453,6 +468,14 @@ const char *nvme_ns_get_sysfs_dir(nvme_ns_t n);
 const char *nvme_ns_get_name(nvme_ns_t n);
 
 /**
+ * nvme_ns_get_generic_name() - Returns name of generic namesapce chardev.
+ * @n: Namespace instance
+ *
+ * Return: Name of generic namespace chardev
+ */
+const char *nvme_ns_get_generic_name(nvme_ns_t n);
+
+/**
  * nvme_ns_get_firmware() -
  * @n:
  *
@@ -724,36 +747,12 @@ const char *nvme_ctrl_get_sqsize(nvme_ctrl_t c);
 const char *nvme_ctrl_get_transport(nvme_ctrl_t c);
 
 /**
- * nvme_ctrl_get_nqn() -
- * @c:
- *
- * Return: 
- */
-const char *nvme_ctrl_get_nqn(nvme_ctrl_t c);
-
-/**
  * nvme_ctrl_get_subsysnqn() -
  * @c:
  *
  * Return: 
  */
 const char *nvme_ctrl_get_subsysnqn(nvme_ctrl_t c);
-
-/**
- * nvme_ctrl_get_hostnqn() -
- * @c:
- *
- * Return: 
- */
-const char *nvme_ctrl_get_hostnqn(nvme_ctrl_t c);
-
-/**
- * nvme_ctrl_get_hostid() -
- * @c:
- *
- * Return: 
- */
-const char *nvme_ctrl_get_hostid(nvme_ctrl_t c);
 
 /**
  * nvme_ctrl_get_subsystem() -
@@ -794,6 +793,21 @@ const char *nvme_ctrl_get_host_traddr(nvme_ctrl_t c);
  * Return:
  */
 const char *nvme_ctrl_get_host_iface(nvme_ctrl_t c);
+
+/**
+ * nvme_ctrl_get_dhchap_key() - return controller key
+ * @c: controller for which the key should be returned
+ *
+ * Return: DH-HMAC-CHAP controller key or NULL if not set
+ */
+const char *nvme_ctrl_get_dhchap_key(nvme_ctrl_t c);
+
+/**
+ * nvme_ctrl_set_dhchap_key() - set controller key
+ * @c: Controller for which the key should be set
+ * @key: DH-HMAC-CHAP Key to set or NULL to clear existing key
+ */
+void nvme_ctrl_set_dhchap_key(nvme_ctrl_t c, const char *key);
 
 /**
  * nvme_ctrl_get_config() -
@@ -838,6 +852,28 @@ void nvme_ctrl_set_persistent(nvme_ctrl_t c, bool persistent);
 bool nvme_ctrl_is_persistent(nvme_ctrl_t c);
 
 /**
+ * nvme_ctrl_set_discovery_ctrl() - Set the 'discovery_ctrl' flag
+ * @c: Controller to be modified
+ * @discovery: value of the discovery_ctrl flag
+ *
+ * Sets the 'discovery_ctrl' flag in @c to specify whether
+ * @c connects to a discovery subsystem.
+ *
+ */
+void nvme_ctrl_set_discovery_ctrl(nvme_ctrl_t c, bool discovery);
+
+/**
+ * nvme_ctrl_is_discovery_ctrl() - Check the 'discovery_ctrl' flag
+ * @c: Controller to be checked
+ *
+ * Returns the value of the 'discovery_ctrl' flag which specifies whether
+ * @c connects to a discovery subsystem.
+ *
+ * Return: value of the 'discover_ctrl' flag
+ */
+bool nvme_ctrl_is_discovery_ctrl(nvme_ctrl_t c);
+
+/**
  * nvme_ctrl_disable_sqflow() -
  * @c:
  * @disable_sqflow:
@@ -878,12 +914,12 @@ nvme_ctrl_t nvme_scan_ctrl(nvme_root_t r, const char *name);
 void nvme_rescan_ctrl(nvme_ctrl_t c);
 
 /**
- * nvme_init_ctrl() -
- * @h:
- * @c:
- * @instance:
+ * nvme_init_ctrl() - Initialize control for an existing nvme device.
+ * @h: host
+ * @c: ctrl
+ * @instance: Instance number (e.g. 1 for nvme1)
  *
- * Return: 
+ * Return: The ioctl() return code. Typically 0 on success.
  */
 int nvme_init_ctrl(nvme_host_t h, nvme_ctrl_t c, int instance);
 
@@ -922,6 +958,16 @@ const char *nvme_subsystem_get_sysfs_dir(nvme_subsystem_t s);
  * Return: 
  */
 const char *nvme_subsystem_get_name(nvme_subsystem_t s);
+
+/**
+ * nvme_subsystem_get_type() - Returns the type of a subsystem
+ * @s: Subsystem
+ *
+ * Returns the subsystem type of @s.
+ *
+ * Return: 'nvm' or 'discovery'
+ */
+const char *nvme_subsystem_get_type(nvme_subsystem_t s);
 
 /**
  * nvme_scan_filter() -
@@ -988,6 +1034,14 @@ void nvme_reset_topology(nvme_root_t r);
  * Return:
  */
 int nvme_update_config(nvme_root_t r);
+
+/**
+ * nvme_dump_config() -
+ * @r:
+ *
+ * Return:
+ */
+int nvme_dump_config(nvme_root_t r);
 
 /**
  * nvme_free_tree() -

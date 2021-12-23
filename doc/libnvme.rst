@@ -5763,14 +5763,6 @@ The nvme command status if a response was received (see
 ``nvme_ctrl_t c``
 
 
-.. c:function:: const char * nvme_ctrl_get_nqn (nvme_ctrl_t c)
-
-
-**Parameters**
-
-``nvme_ctrl_t c``
-
-
 .. c:function:: const char * nvme_ctrl_get_subsysnqn (nvme_ctrl_t c)
 
 
@@ -6280,9 +6272,8 @@ Returns true if given offset is 64bit register, otherwise it returns false.
     __u8 ips;
     __u8 rsvd19;
     __le16 actp;
-    __u8 apw;
-    __u8 aps;
-    __u8 rsvd23[8];
+    __u8 apws;
+    __u8 rsvd23[9];
   };
 
 **Members**
@@ -6340,14 +6331,12 @@ Returns true if given offset is 64bit register, otherwise it returns false.
   NVM subsystem over a 10 second period in this power state with
   the workload indicated in the Active Power Workload field.
 
-``apw``
-  Active Power Workload indicates the workload used to calculate
+``apws``
+  Bits 7-6: Active Power Scale(APS) indicates the scale for the :c:type:`struct
+  nvme_id_psd <nvme_id_psd>`.actp, see :c:type:`enum nvme_psd_ps <nvme_psd_ps>` for decoding this value.
+  Bits 2-0: Active Power Workload(APW) indicates the workload used to calculate
   maximum power for this power state. See :c:type:`enum nvme_psd_workload <nvme_psd_workload>` for
   decoding this field.
-
-``aps``
-  Active Power Scale indicates the scale for the :c:type:`struct
-  nvme_id_psd <nvme_id_psd>`.actp, see :c:type:`enum nvme_psd_ps <nvme_psd_ps>` for decoding this value.
 
 
 
@@ -6436,7 +6425,7 @@ Returns true if given offset is 64bit register, otherwise it returns false.
     __u8 nvscc;
     __u8 nwpc;
     __le16 acwu;
-    __u8 rsvd534[2];
+    __le16 ocfs;
     __le32 sgls;
     __le32 mnan;
     __u8 rsvd544[224];
@@ -6760,6 +6749,10 @@ Returns true if given offset is 64bit register, otherwise it returns false.
   all namespaces with any supported namespace format for a Compare
   and Write fused operation. This field is specified in logical
   blocks and is a 0’s based value.
+
+``ocfs``
+  Optional Copy Formats Supported, each bit n means controller supports
+  Copy Format n.
 
 ``sgls``
   SGL Support, see :c:type:`enum nvme_id_ctrl_sgls <nvme_id_ctrl_sgls>`
@@ -9542,24 +9535,6 @@ bytes, in size. This log captures the controller’s internal state.
 
 ``NVME_ID_DIR_SD_BIT``
   *undescribed*
-
-
-
-
-.. c:type:: struct nvme_host_mem_buf_desc
-
-
-**Definition**
-
-::
-
-  struct nvme_host_mem_buf_desc {
-    __le64 addr;
-    __le32 size;
-    __u32 rsvd;
-  };
-
-**Members**
 
 
 

@@ -1,5 +1,5 @@
 CFLAGS ?= -g -O2
-override CFLAGS += -Wall -D_GNU_SOURCE -I ../src -L ../src
+override CFLAGS += -Wall -D_GNU_SOURCE -I .. -I ../src -L ../src -I../ccan --include "config.h"
 
 include ../Makefile.quiet
 
@@ -11,7 +11,7 @@ all_targets += telemetry-listen display-tree display-columnar discover-loop
 
 all: $(all_targets)
 
-%: %.c
+%: %.c ../src/libnvme.a
 	$(QUIET_CC)$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $< -lnvme $(LIBS)
 
 clean:

@@ -21,22 +21,23 @@
 
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <arpa/inet.h>
+#include <netdb.h>
+#include <net/if.h>
 
-#ifdef CONFIG_SYSTEMD
-#include <systemd/sd-id128.h>
-#define NVME_HOSTNQN_ID SD_ID128_MAKE(c7,f4,61,81,12,be,49,32,8c,83,10,6f,9d,dd,d8,6b)
-#endif
-
+#include <ccan/endian/endian.h>
 #include <ccan/list/list.h>
 #include <ccan/array_size/array_size.h>
 
 #include "fabrics.h"
+#include "linux.h"
 #include "ioctl.h"
 #include "util.h"
 #include "log.h"
 #include "private.h"
 
 #define NVMF_HOSTID_SIZE	37
+#define UUID_SIZE		37  /* 1b4e28ba-2fa1-11d2-883f-0016d3cca427 + \0 */
 
 const char *nvmf_dev = "/dev/nvme-fabrics";
 const char *nvmf_hostnqn_file = "/etc/nvme/hostnqn";
@@ -76,8 +77,9 @@ const char *nvmf_adrfam_str(__u8 adrfam)
 }
 
 static const char * const subtypes[] = {
-	[NVME_NQN_DISC]		= "discovery subsystem",
+	[NVME_NQN_DISC]		= "discovery subsystem referral",
 	[NVME_NQN_NVME]		= "nvme subsystem",
+	[NVME_NQN_CURR]		= "current discovery subsystem",
 };
 
 const char *nvmf_subtype_str(__u8 subtype)
@@ -98,9 +100,23 @@ const char *nvmf_treq_str(__u8 treq)
 	return arg_str(treqs, ARRAY_SIZE(treqs), treq);
 }
 
+static const char * const eflags_strings[] = {
+	[NVMF_DISC_EFLAGS_NONE]		= "not specified",
+	[NVMF_DISC_EFLAGS_EPCSD]	= "explicit discovery connections",
+	[NVMF_DISC_EFLAGS_DUPRETINFO]	= "duplicate discovery information",
+	[NVMF_DISC_EFLAGS_BOTH]		= "explicit discovery connections, "
+					  "duplicate discovery information",
+};
+
+const char *nvmf_eflags_str(__u16 eflags)
+{
+	return arg_str(eflags_strings, ARRAY_SIZE(eflags_strings), eflags);
+}
+
 static const char * const sectypes[] = {
 	[NVMF_TCP_SECTYPE_NONE]		= "none",
 	[NVMF_TCP_SECTYPE_TLS]		= "tls",
+	[NVMF_TCP_SECTYPE_TLS13]	= "tls13",
 };
 
 const char *nvmf_sectype_str(__u8 sectype)
@@ -138,6 +154,13 @@ static const char * const cms[] = {
 const char *nvmf_cms_str(__u8 cm)
 {
 	return arg_str(cms, ARRAY_SIZE(cms), cm);
+}
+
+void nvmf_default_config(struct nvme_fabrics_config *cfg)
+{
+	memset(cfg, 0, sizeof(*cfg));
+	cfg->tos = -1;
+	cfg->ctrl_loss_tmo = NVMF_DEF_CTRL_LOSS_TMO;
 }
 
 #define UPDATE_CFG_OPTION(c, n, o, d)			\
@@ -213,12 +236,170 @@ static int add_argument(char **argstr, const char *tok, const char *arg)
 	return 0;
 }
 
-static int build_options(nvme_ctrl_t c, char **argstr)
+static int inet4_pton(const char *src, uint16_t port,
+		      struct sockaddr_storage *addr)
+{
+	struct sockaddr_in *addr4 = (struct sockaddr_in *)addr;
+
+	if (strlen(src) > INET_ADDRSTRLEN)
+		return -EINVAL;
+
+	if (inet_pton(AF_INET, src, &addr4->sin_addr.s_addr) <= 0)
+		return -EINVAL;
+
+	addr4->sin_family = AF_INET;
+	addr4->sin_port = htons(port);
+
+	return 0;
+}
+
+static int inet6_pton(const char *src, uint16_t port,
+		      struct sockaddr_storage *addr)
+{
+	int ret = -EINVAL;
+	struct sockaddr_in6 *addr6 = (struct sockaddr_in6 *)addr;
+
+	if (strlen(src) > INET6_ADDRSTRLEN)
+		return -EINVAL;
+
+	char  *tmp = strdup(src);
+	if (!tmp)
+		nvme_msg(LOG_ERR, "cannot copy: %s\n", src);
+
+	const char *scope = NULL;
+	char *p = strchr(tmp, SCOPE_DELIMITER);
+	if (p) {
+		*p = '\0';
+		scope = src + (p - tmp) + 1;
+	}
+
+	if (inet_pton(AF_INET6, tmp, &addr6->sin6_addr) != 1)
+		goto free_tmp;
+
+	if (IN6_IS_ADDR_LINKLOCAL(&addr6->sin6_addr) && scope) {
+		addr6->sin6_scope_id = if_nametoindex(scope);
+		if (addr6->sin6_scope_id == 0) {
+			nvme_msg(LOG_ERR,
+				 "can't find iface index for: %s (%m)\n", scope);
+			goto free_tmp;
+		}
+	}
+
+	addr6->sin6_family = AF_INET6;
+	addr6->sin6_port = htons(port);
+	ret = 0;
+
+free_tmp:
+	free(tmp);
+	return ret;
+}
+
+/**
+ * inet_pton_with_scope - convert an IPv4/IPv6 to socket address
+ * @af: address family, AF_INET, AF_INET6 or AF_UNSPEC for either
+ * @src: the start of the address string
+ * @addr: output socket address
+ *
+ * Return 0 on success, errno otherwise.
+ */
+static int inet_pton_with_scope(int af, const char *src, const char * trsvcid,
+				struct sockaddr_storage *addr)
+{
+	int      ret  = -EINVAL;
+	uint16_t port = 0;
+
+	if (trsvcid) {
+		unsigned long long tmp = strtoull(trsvcid, NULL, 0);
+		port = (uint16_t)tmp;
+		if (tmp != port) {
+			nvme_msg(LOG_ERR, "trsvcid out of range: %s\n", trsvcid);
+			return -ERANGE;
+		}
+	} else {
+		port = 0;
+	}
+
+	switch (af) {
+	case AF_INET:
+		ret = inet4_pton(src, port, addr);
+		break;
+	case AF_INET6:
+		ret = inet6_pton(src, port, addr);
+		break;
+	case AF_UNSPEC:
+		ret = inet4_pton(src, port, addr);
+		if (ret)
+			ret = inet6_pton(src, port, addr);
+		break;
+	default:
+		nvme_msg(LOG_ERR, "unexpected address family %d\n", af);
+	}
+
+	return ret;
+}
+
+static bool traddr_is_hostname(nvme_ctrl_t c)
+{
+	struct sockaddr_storage addr;
+
+	if (!c->traddr)
+		return false;
+	if (strcmp(c->transport, "tcp") && strcmp(c->transport, "rdma"))
+		return false;
+	if (inet_pton_with_scope(AF_UNSPEC, c->traddr, c->trsvcid, &addr) == 0)
+		return false;
+	return true;
+}
+
+static int hostname2traddr(nvme_ctrl_t c)
+{
+	struct addrinfo *host_info, hints = {.ai_family = AF_UNSPEC};
+	char addrstr[NVMF_TRADDR_SIZE];
+	const char *p;
+	int ret;
+
+	ret = getaddrinfo(c->traddr, NULL, &hints, &host_info);
+	if (ret) {
+		nvme_msg(LOG_ERR, "failed to resolve host %s info\n", c->traddr);
+		return ret;
+	}
+
+	switch (host_info->ai_family) {
+	case AF_INET:
+		p = inet_ntop(host_info->ai_family,
+			&(((struct sockaddr_in *)host_info->ai_addr)->sin_addr),
+			addrstr, NVMF_TRADDR_SIZE);
+		break;
+	case AF_INET6:
+		p = inet_ntop(host_info->ai_family,
+			&(((struct sockaddr_in6 *)host_info->ai_addr)->sin6_addr),
+			addrstr, NVMF_TRADDR_SIZE);
+		break;
+	default:
+		nvme_msg(LOG_ERR, "unrecognized address family (%d) %s\n",
+			host_info->ai_family, c->traddr);
+		ret = -EINVAL;
+		goto free_addrinfo;
+	}
+
+	if (!p) {
+		nvme_msg(LOG_ERR, "failed to get traddr for %s\n", c->traddr);
+		ret = -errno;
+		goto free_addrinfo;
+	}
+	c->traddr = strdup(addrstr);
+
+free_addrinfo:
+	freeaddrinfo(host_info);
+	return ret;
+}
+
+static int build_options(nvme_host_t h, nvme_ctrl_t c, char **argstr)
 {
 	struct nvme_fabrics_config *cfg = nvme_ctrl_get_config(c);
 	const char *transport = nvme_ctrl_get_transport(c);
-	const char *hostnqn, *hostid;
-	bool discover = false;
+	const char *hostnqn, *hostid, *hostkey, *ctrlkey;
+	bool discover = false, discovery_nqn = false;
 
 	if (!transport) {
 		nvme_msg(LOG_ERR, "need a transport (-t) argument\n");
@@ -243,10 +424,16 @@ static int build_options(nvme_ctrl_t c, char **argstr)
 		errno = ENOMEM;
 		return -1;
 	}
-	if (!strcmp(nvme_ctrl_get_subsysnqn(c), NVME_DISC_SUBSYS_NAME))
+	if (!strcmp(nvme_ctrl_get_subsysnqn(c), NVME_DISC_SUBSYS_NAME)) {
+		nvme_ctrl_set_discovery_ctrl(c, true);
+		discovery_nqn = true;
+	}
+	if (nvme_ctrl_is_discovery_ctrl(c))
 		discover = true;
-	hostnqn = nvme_ctrl_get_hostnqn(c);
-	hostid = nvme_ctrl_get_hostid(c);
+	hostnqn = nvme_host_get_hostnqn(h);
+	hostid = nvme_host_get_hostid(h);
+	hostkey = nvme_host_get_dhchap_key(h);
+	ctrlkey = nvme_ctrl_get_dhchap_key(c);
 	if (add_argument(argstr, "transport", transport) ||
 	    add_argument(argstr, "traddr",
 			 nvme_ctrl_get_traddr(c)) ||
@@ -258,6 +445,12 @@ static int build_options(nvme_ctrl_t c, char **argstr)
 			 nvme_ctrl_get_trsvcid(c)) ||
 	    (hostnqn && add_argument(argstr, "hostnqn", hostnqn)) ||
 	    (hostid && add_argument(argstr, "hostid", hostid)) ||
+	    (discover && !discovery_nqn &&
+	     add_bool_argument(argstr, "discovery", true)) ||
+	    (!discover && hostkey &&
+	     add_argument(argstr, "dhchap_secret", hostkey)) ||
+	    (!discover && ctrlkey &&
+	     add_argument(argstr, "dhchap_ctrl_secret", ctrlkey)) ||
 	    (!discover &&
 	     add_int_argument(argstr, "nr_io_queues",
 			      cfg->nr_io_queues, false)) ||
@@ -347,12 +540,19 @@ out_close:
 
 int nvmf_add_ctrl_opts(nvme_ctrl_t c, struct nvme_fabrics_config *cfg)
 {
+	nvme_subsystem_t s = nvme_ctrl_get_subsystem(c);
+	nvme_host_t h = nvme_subsystem_get_host(s);
 	char *argstr;
 	int ret;
 
 	cfg = merge_config(c, cfg);
+	if (traddr_is_hostname(c)) {
+		ret = hostname2traddr(c);
+		if (ret)
+			return ret;
+	}
 
-	ret = build_options(c, &argstr);
+	ret = build_options(h, c, &argstr);
 	if (ret)
 		return ret;
 
@@ -373,8 +573,13 @@ int nvmf_add_ctrl(nvme_host_t h, nvme_ctrl_t c,
 	cfg = merge_config(c, cfg);
 	nvme_ctrl_disable_sqflow(c, disable_sqflow);
 	nvme_ctrl_set_discovered(c, true);
+	if (traddr_is_hostname(c)) {
+		ret = hostname2traddr(c);
+		if (ret)
+			return ret;
+	}
 
-	ret = build_options(c, &argstr);
+	ret = build_options(h, c, &argstr);
 	if (ret)
 		return ret;
 
@@ -397,20 +602,6 @@ nvme_ctrl_t nvmf_connect_disc_entry(nvme_host_t h,
 	nvme_ctrl_t c;
 	bool disable_sqflow = false;
 	int ret;
-
-	switch (e->subtype) {
-	case NVME_NQN_DISC:
-		if (discover)
-			*discover = true;
-		break;
-	case NVME_NQN_NVME:
-		break;
-	default:
-		nvme_msg(LOG_ERR, "skipping unsupported subtype %d\n",
-			 e->subtype);
-		errno = EINVAL;
-		return NULL;
-	}
 
 	switch (e->trtype) {
 	case NVMF_TRTYPE_RDMA:
@@ -465,6 +656,25 @@ nvme_ctrl_t nvmf_connect_disc_entry(nvme_host_t h,
 		errno = ENOMEM;
 		return NULL;
 	}
+
+	switch (e->subtype) {
+	case NVME_NQN_CURR:
+		nvme_ctrl_set_discovered(c, true);
+		break;
+	case NVME_NQN_DISC:
+		if (discover)
+			*discover = true;
+		nvme_ctrl_set_discovery_ctrl(c, true);
+		break;
+	default:
+		nvme_msg(LOG_ERR, "unsupported subtype %d\n",
+			 e->subtype);
+		/* fallthrough */
+	case NVME_NQN_NVME:
+		nvme_ctrl_set_discovery_ctrl(c, false);
+		break;
+	}
+
 	if (nvme_ctrl_is_discovered(c)) {
 		errno = EAGAIN;
 		return NULL;
@@ -588,9 +798,29 @@ out_free_log:
 	return ret;
 }
 
+#define PATH_UUID_IBM	"/proc/device-tree/ibm,partition-uuid"
+
+static int uuid_from_device_tree(char *system_uuid)
+{
+	ssize_t len;
+	int f;
+
+	f = open(PATH_UUID_IBM, O_RDONLY);
+	if (f < 0)
+		return -ENXIO;
+
+	memset(system_uuid, 0, UUID_SIZE);
+	len = read(f, system_uuid, UUID_SIZE - 1);
+	close(f);
+	if (len < 0)
+		return -ENXIO;
+
+	return strlen(system_uuid) ? 0 : -ENXIO;
+}
+
 #define PATH_DMI_ENTRIES       "/sys/firmware/dmi/entries"
 
-int uuid_from_dmi(char *system_uuid)
+static int uuid_from_dmi_entries(char *system_uuid)
 {
 	int f;
 	DIR *d;
@@ -611,7 +841,6 @@ int uuid_from_dmi(char *system_uuid)
 		f = open(filename, O_RDONLY);
 		if (f < 0)
 			continue;
-		len = read(f, buf, 512);
 		len = read(f, buf, 512);
 		close(f);
 		if (len < 0)
@@ -647,21 +876,66 @@ int uuid_from_dmi(char *system_uuid)
 	return strlen(system_uuid) ? 0 : -ENXIO;
 }
 
-#ifdef CONFIG_SYSTEMD
-#include <systemd/sd-id128.h>
-#define NVME_HOSTNQN_ID SD_ID128_MAKE(c7,f4,61,81,12,be,49,32,8c,83,10,6f,9d,dd,d8,6b)
-#endif
-
-static int uuid_from_systemd(char *system_uuid)
+/**
+ * @brief Get system UUID from /sys/class/dmi/id/product_uuid and fix
+ *        endianess.
+ *
+ * @param system_uuid - Where to save the system UUID.
+ *
+ * @return 0 on success, -ENXIO otherwise.
+ */
+#define PATH_DMI_PROD_UUID  "/sys/class/dmi/id/product_uuid"
+static int uuid_from_product_uuid(char *system_uuid)
 {
-	int ret = -ENOTSUP;
-#ifdef CONFIG_SYSTEMD
-	sd_id128_t id;
+	FILE *stream = NULL;
+	int   ret    = -ENXIO;
 
-	ret = sd_id128_get_machine_app_specific(NVME_HOSTNQN_ID, &id);
-	if (!ret)
-		sd_id128_to_string(id, system_uuid);
-#endif
+	system_uuid[0] = '\0';
+
+	if ((stream = fopen(PATH_DMI_PROD_UUID, "re")) != NULL) {
+		char    *line  = NULL;
+		size_t   len   = 0;
+		ssize_t  nread = getline(&line, &len, stream);
+
+		if (nread == UUID_SIZE) {
+			/* Per "DMTF SMBIOS 3.0 Section 7.2.1 System UUID", the
+			 * UUID retrieved from the DMI has the wrong endianess.
+			 * The following copies "line" to "system_uuid" while
+			 * swapping from little-endian to network-endian. */
+			static const int swaptbl[] = {
+				6,7,4,5,2,3,0,1,8,11,12,9,10,13,16,17,14,15,18,19,
+				20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,
+				-1 /* sentinel */
+			};
+			int i;
+
+			for (i = 0; swaptbl[i] != -1; i++)
+				system_uuid[i] = line[swaptbl[i]];
+			system_uuid[UUID_SIZE-1] = '\0';
+
+			ret = 0;
+		}
+
+		free(line);
+		fclose(stream);
+	}
+
+	return ret;
+}
+
+/**
+ * @brief The system UUID can be read from two different locations:
+ *
+ *     1) /sys/class/dmi/id/product_uuid
+ *     2) /sys/firmware/dmi/entries
+ *
+ * Note that the second location is not present on Debian-based systems.
+ */
+static int uuid_from_dmi(char *system_uuid)
+{
+	int ret = uuid_from_product_uuid(system_uuid);
+	if (ret != 0)
+		ret = uuid_from_dmi_entries(system_uuid);
 	return ret;
 }
 
@@ -669,14 +943,15 @@ char *nvmf_hostnqn_generate()
 {
 	char *hostnqn;
 	int ret;
-	char uuid_str[37]; /* e.g. 1b4e28ba-2fa1-11d2-883f-0016d3cca427 + \0 */
+	char uuid_str[UUID_SIZE];
 #ifdef CONFIG_LIBUUID
 	uuid_t uuid;
 #endif
 
 	ret = uuid_from_dmi(uuid_str);
-	if (ret < 0)
-		ret = uuid_from_systemd(uuid_str);
+	if (ret < 0) {
+		ret = uuid_from_device_tree(uuid_str);
+	}
 #ifdef CONFIG_LIBUUID
 	if (ret < 0) {
 		uuid_generate_random(uuid);
@@ -687,7 +962,9 @@ char *nvmf_hostnqn_generate()
 	if (ret < 0)
 		return NULL;
 
-	asprintf(&hostnqn, "nqn.2014-08.org.nvmexpress:uuid:%s\n", uuid_str);
+	if (asprintf(&hostnqn, "nqn.2014-08.org.nvmexpress:uuid:%s", uuid_str) < 0)
+		return NULL;
+
 	return hostnqn;
 }
 

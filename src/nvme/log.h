@@ -1,10 +1,11 @@
+// SPDX-License-Identifier: LGPL-2.1-or-later
 /*
  * Copyright (c) 2021 Martin Wilck, SUSE LLC
- * SPDX-License-Identifier: LGPL-2.1-or-newer
  */
 #ifndef _LOG_H
 #define _LOG_H
 
+#include <stdbool.h>
 #include <syslog.h>
 
 #ifndef MAX_LOGLEVEL

@@ -1,5 +1,5 @@
 CFLAGS ?= -g -O2
-override CFLAGS += -Wall -D_GNU_SOURCE -L../src/ -I../src/
+override CFLAGS += -Wall -D_GNU_SOURCE -L../src/ -I .. -I../src/ -I../ccan --include "config.h"
 
 include ../Makefile.quiet
 
@@ -22,10 +22,10 @@ all: $(all_targets)
 
 CXXFLAGS ?= -lstdc++
 
-%: %.cc
+%: %.cc ../src/libnvme.a
 	$(QUIET_CC)$(CXX) $(CFLAGS) $(LDFLAGS) $(CXXFLAGS) -o $@ $< -lnvme $(LIBS)
 
-%: %.c
+%: %.c ../src/libnvme.a
 	$(QUIET_CC)$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $< -lnvme $(LIBS)
 
 clean:

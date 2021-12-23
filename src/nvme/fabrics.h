@@ -50,36 +50,59 @@ struct nvme_fabrics_config {
 };
 
 /**
- * nvmf_trtype_str() -
- * @trtype:
+ * nvmf_trtype_str() - Decode TRTYPE field
+ * @trtype: value to be decoded
  *
- * Return:
+ * Decode the transport type field in the discovery
+ * log page entry.
+ *
+ * Return: decoded string
  */
 const char *nvmf_trtype_str(__u8 trtype);
 
 /**
- * nvmf_adrfam_str() -
- * @adrfam:
+ * nvmf_adrfam_str() - Decode ADRFAM field
+ * @adrfam: value to be decoded
  *
- * Return:
+ * Decode the address family field in the discovery
+ * log page entry.
+ *
+ * Return: decoded string
  */
 const char *nvmf_adrfam_str(__u8 adrfam);
 
 /**
- * nvmf_subtype_str() -
- * @subtype:
+ * nvmf_subtype_str() - Decode SUBTYPE field
+ * @subtype: value to be decoded
  *
- * Return:
+ * Decode the subsystem type field in the discovery
+ * log page entry.
+ *
+ * Return: decoded string
  */
 const char *nvmf_subtype_str(__u8 subtype);
 
 /**
- * nvmf_treq_str() -
- * @treq:
+ * nvmf_treq_str() - Decode TREQ field
+ * @treq: value to be decoded
  *
- * Return:
+ * Decode the transport requirements field in the
+ * discovery log page entry.
+ *
+ * Return: decoded string
  */
 const char *nvmf_treq_str(__u8 treq);
+
+/**
+ * nvmf_eflags_str() - Decode EFLAGS field
+ * @eflags: value to be decoded
+ *
+ * Decode the EFLAGS field in the discovery log page
+ * entry.
+ *
+ * Return: decoded string
+ */
+const char *nvmf_eflags_str(__u16 eflags);
 
 /**
  * nvmf_sectype_str() -
@@ -112,6 +135,14 @@ const char *nvmf_qptype_str(__u8 qptype);
  * Return:
  */
 const char *nvmf_cms_str(__u8 cms);
+
+/**
+ * nvmf_default_config - Default values for fabrics configuration
+ * @cfg: config values to set
+ *
+ * Initializes @cfg with default values.
+ */
+void nvmf_default_config(struct nvme_fabrics_config *cfg);
 
 /**
  * nvmf_add_ctrl_opts() -
@@ -148,7 +179,7 @@ int nvmf_get_discovery_log(nvme_ctrl_t c, struct nvmf_discovery_log **logp,
 
 /**
  * nvmf_hostnqn_generate() - Generate a machine specific host nqn
- * Returns: An nvm namespace qualifieid name string based on the machine
+ * Returns: An nvm namespace qualified name string based on the machine
  * identifier, or NULL if not successful.
  */
 char *nvmf_hostnqn_generate();
@@ -181,5 +212,16 @@ char *nvmf_hostid_from_file();
 nvme_ctrl_t nvmf_connect_disc_entry(nvme_host_t h,
 	struct nvmf_disc_log_entry *e,
 	const struct nvme_fabrics_config *defcfg, bool *discover);
+
+/**
+ * nvme_chomp() - Strip trailing white space
+ * &s: String to strip
+ * @l: Maximum length of string
+ */
+static inline void nvme_chomp(char *s, int l)
+{
+	while (l && (s[l] == '\0' || s[l] == ' '))
+		s[l--] = '\0';
+}
 
 #endif /* _LIBNVME_FABRICS_H */

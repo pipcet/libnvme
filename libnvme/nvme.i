@@ -19,7 +19,6 @@
 %rename(ns)        nvme_ns;
 
 %{
-#include <assert.h>
 #include <ccan/list/list.h>
 #include "nvme/tree.h"
 #include "nvme/fabrics.h"
@@ -58,52 +57,47 @@ static int discover_err = 0;
 %}
 
 %exception host_iter::__next__ {
-  assert(!host_iter_err);
-  $action
+  host_iter_err = 0;
+  $action  /* $action sets host_iter_err to non-zero value on failure */
   if (host_iter_err) {
-    host_iter_err = 0;
     PyErr_SetString(PyExc_StopIteration, "End of list");
     return NULL;
   }
 }
 
 %exception subsystem_iter::__next__ {
-  assert(!subsys_iter_err);
-  $action
+  subsys_iter_err = 0;
+  $action  /* $action sets subsys_iter_err to non-zero value on failure */
   if (subsys_iter_err) {
-    subsys_iter_err = 0;
     PyErr_SetString(PyExc_StopIteration, "End of list");
     return NULL;
   }
 }
 
 %exception ctrl_iter::__next__ {
-  assert(!ctrl_iter_err);
-  $action
+  ctrl_iter_err = 0;
+  $action  /* $action sets ctrl_iter_err to non-zero value on failure */
   if (ctrl_iter_err) {
-    ctrl_iter_err = 0;
     PyErr_SetString(PyExc_StopIteration, "End of list");
     return NULL;
   }
 }
 
 %exception ns_iter::__next__ {
-  assert(!ns_iter_err);
-  $action
+  ns_iter_err = 0;
+  $action  /* $action sets ns_iter_err to non-zero value on failure */
   if (ns_iter_err) {
-    ns_iter_err = 0;
     PyErr_SetString(PyExc_StopIteration, "End of list");
     return NULL;
   }
 }
 
 %exception nvme_ctrl::connect {
-  $action
+  connect_err = 0;
+  $action  /* $action sets connect_err to non-zero value on failure */
   if (connect_err == 1) {
-    connect_err = 0;
     SWIG_exception(SWIG_AttributeError, "Existing controller connection");
   } else if (connect_err) {
-    connect_err = 0;
     if (nvme_log_message)
       SWIG_exception(SWIG_RuntimeError, nvme_log_message);
     else
@@ -112,9 +106,9 @@ static int discover_err = 0;
 }
 
 %exception nvme_ctrl::discover {
-  $action
+  discover_err = 0;
+  $action  /* $action sets discover_err to non-zero value on failure */
   if (discover_err) {
-    discover_err = 0;
     SWIG_exception(SWIG_RuntimeError,"Discover failed");
   }
 }
@@ -167,6 +161,13 @@ static int discover_err = 0;
    if ($1) free($1);
 }
 
+%{
+static void PyDict_SetItemStringDecRef(PyObject *p, const char *key, PyObject *val) {
+    PyDict_SetItemString(p, key, val); /* Does NOT steal reference to val .. */
+    Py_XDECREF(val);                   /* .. therefore decrement ref. count. */
+}
+%}
+
 %typemap(out) struct nvmf_discovery_log * {
   struct nvmf_discovery_log *log = $1;
   int numrec = log? log->numrec : 0, i;
@@ -196,7 +197,7 @@ static int discover_err = 0;
     default:
       val = PyLong_FromLong(e->trtype);
     }
-    PyDict_SetItemString(entry, "trtype", val);
+    PyDict_SetItemStringDecRef(entry, "trtype", val);
     switch (e->adrfam) {
     case NVMF_ADDR_FAMILY_PCI:
       val = PyUnicode_FromString("pci");
@@ -216,24 +217,27 @@ static int discover_err = 0;
     default:
       val = PyLong_FromLong(e->adrfam);
     }
-    PyDict_SetItemString(entry, "adrfam", val);
+    PyDict_SetItemStringDecRef(entry, "adrfam", val);
     val = PyUnicode_FromString(e->traddr);
-    PyDict_SetItemString(entry, "traddr", val);
+    PyDict_SetItemStringDecRef(entry, "traddr", val);
     val = PyUnicode_FromString(e->trsvcid);
-    PyDict_SetItemString(entry, "trsvcid", val);
+    PyDict_SetItemStringDecRef(entry, "trsvcid", val);
     val = PyUnicode_FromString(e->subnqn);
-    PyDict_SetItemString(entry, "subnqn", val);
+    PyDict_SetItemStringDecRef(entry, "subnqn", val);
     switch (e->subtype) {
     case NVME_NQN_DISC:
-      val = PyUnicode_FromString("discovery");
+      val = PyUnicode_FromString("referral");
       break;
     case NVME_NQN_NVME:
       val = PyUnicode_FromString("nvme");
       break;
+    case NVME_NQN_CURR:
+      val = PyUnicode_FromString("discovery");
+      break;
     default:
       val = PyLong_FromLong(e->subtype);
     }
-    PyDict_SetItemString(entry, "subtype", val);
+    PyDict_SetItemStringDecRef(entry, "subtype", val);
     switch (e->treq) {
     case NVMF_TREQ_NOT_SPECIFIED:
       val = PyUnicode_FromString("not specified");
@@ -250,14 +254,14 @@ static int discover_err = 0;
     default:
       val = PyLong_FromLong(e->treq);
     }
-    PyDict_SetItemString(entry, "treq", val);
+    PyDict_SetItemStringDecRef(entry, "treq", val);
     val = PyLong_FromLong(e->portid);
-    PyDict_SetItemString(entry, "portid", val);
+    PyDict_SetItemStringDecRef(entry, "portid", val);
     val = PyLong_FromLong(e->cntlid);
-    PyDict_SetItemString(entry, "cntlid", val);
+    PyDict_SetItemStringDecRef(entry, "cntlid", val);
     val = PyLong_FromLong(e->asqsz);
-    PyDict_SetItemString(entry, "asqsz", val);
-    PyList_SetItem(obj, i, entry);
+    PyDict_SetItemStringDecRef(entry, "asqsz", val);
+    PyList_SetItem(obj, i, entry); /* steals ref. to entry */
   }
   $result = obj;
  };
@@ -271,6 +275,7 @@ struct nvme_host {
   %immutable hostid;
   char *hostnqn;
   char *hostid;
+  char *dhchap_key;
 };
 
 struct nvme_subsystem {
@@ -297,11 +302,14 @@ struct nvme_ctrl {
   %immutable queue_count;
   %immutable serial;
   %immutable sqsize;
+  %immutable persistent;
+  %immutable discovery_ctrl;
   char *transport;
   char *subsysnqn;
   char *traddr;
   char *host_traddr;
   char *trsvcid;
+  char *dhchap_key;
   char *address;
   char *firmware;
   char *model;
@@ -309,6 +317,8 @@ struct nvme_ctrl {
   char *queue_count;
   char *serial;
   char *sqsize;
+  bool persistent;
+  bool discovery_ctrl;
 };
 
 struct nvme_ns {
@@ -393,7 +403,7 @@ struct nvme_ns {
   }
   struct host_iter __iter__() {
     struct host_iter ret = { .root = nvme_host_get_root($self),
-				     .pos = $self };
+			     .pos = $self };
     return ret;
   }
   struct nvme_subsystem *subsystems() {
@@ -452,7 +462,7 @@ struct nvme_ns {
   }
   struct subsystem_iter __iter__() {
     struct subsystem_iter ret = { .host = nvme_subsystem_get_host($self),
-				       .pos = $self };
+				  .pos = $self };
     return ret;
   }
   struct nvme_ctrl *controllers() {
@@ -502,6 +512,15 @@ struct nvme_ns {
   ~nvme_ctrl() {
     nvme_free_ctrl($self);
   }
+
+  void discovery_ctrl_set(bool discovery) {
+      nvme_ctrl_set_discovery_ctrl($self, discovery);
+  }
+
+  bool init(struct nvme_host *h, int instance) {
+      return nvme_init_ctrl(h, $self, instance) == 0;
+  }
+
   void connect(struct nvme_host *h, struct nvme_fabrics_config *cfg = NULL) {
     int ret;
     const char *dev;
@@ -519,6 +538,9 @@ struct nvme_ns {
   }
   bool connected() {
     return nvme_ctrl_get_name($self) != NULL;
+  }
+  void persistent_set(bool persistent) {
+    nvme_ctrl_set_persistent($self, persistent);
   }
   void rescan() {
     nvme_rescan_ctrl($self);
@@ -550,7 +572,7 @@ struct nvme_ns {
   }
   struct ctrl_iter __iter__() {
     struct ctrl_iter ret = { .subsystem = nvme_ctrl_get_subsystem($self),
-				  .pos = $self };
+			     .pos = $self };
     return ret;
   }
   struct nvme_ns *namespaces() {
@@ -591,8 +613,8 @@ struct nvme_ns {
   }
   struct ns_iter __iter__() {
     struct ns_iter ret = { .ctrl = nvme_ns_get_ctrl($self),
-				.subsystem = nvme_ns_get_subsystem($self),
-				.pos = $self };
+			   .subsystem = nvme_ns_get_subsystem($self),
+			   .pos = $self };
     return ret;
   }
   %immutable name;
@@ -605,3 +627,15 @@ struct nvme_ns {
   }
 %};
 
+
+// We want to swig all the #define and enum from types.h, but none of the structs.
+%{
+#include "nvme/types.h"
+%}
+#define __attribute__(x)
+%rename($ignore, %$isclass) "";     // ignore all classes/structs
+%rename($ignore, %$isfunction) "";  // ignore all functions
+%rename($ignore, %$isunion) "";     // ignore all unions
+%rename($ignore, %$isvariable ) ""; // ignore all variables
+
+%include "../src/nvme/types.h"

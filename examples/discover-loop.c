@@ -18,6 +18,8 @@
 #include <errno.h>
 #include <libnvme.h>
 
+#include <ccan/endian/endian.h>
+
 static void print_discover_log(struct nvmf_discovery_log *log)
 {
 	int i, numrec = le64_to_cpu(log->numrec);
@@ -51,10 +53,9 @@ int main()
 	nvme_host_t h;
 	nvme_ctrl_t c;
 	int ret;
+	struct nvme_fabrics_config cfg;
 
-	struct nvme_fabrics_config cfg = {
-		.tos = -1,
-	};
+	nvmf_default_config(&cfg);
 
 	r = nvme_scan(NULL);
 	h = nvme_default_host(r);

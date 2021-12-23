@@ -9,6 +9,15 @@
 #ifndef _LIBNVME_PRIVATE_H
 #define _LIBNVME_PRIVATE_H
 
+#include <ccan/list/list.h>
+
+#include "fabrics.h"
+
+#ifdef CONFIG_LIBUUID
+#include <uuid/uuid.h>
+#endif
+
+
 extern const char *nvme_ctrl_sysfs_dir;
 extern const char *nvme_subsys_sysfs_dir;
 extern const char *nvme_ns_sysfs_dir;
@@ -36,6 +45,7 @@ struct nvme_ns {
 	int fd;
 	__u32 nsid;
 	char *name;
+	char *generic_name;
 	char *sysfs_dir;
 
 	int lba_shift;
@@ -71,14 +81,14 @@ struct nvme_ctrl {
 	char *queue_count;
 	char *serial;
 	char *sqsize;
-	char *hostnqn;
-	char *hostid;
 	char *transport;
 	char *subsysnqn;
 	char *traddr;
 	char *trsvcid;
 	char *host_traddr;
 	char *host_iface;
+	char *dhchap_key;
+	bool discovery_ctrl;
 	bool discovered;
 	bool persistent;
 	struct nvme_fabrics_config cfg;
@@ -96,6 +106,7 @@ struct nvme_subsystem {
 	char *model;
 	char *serial;
 	char *firmware;
+	char *subsystype;
 };
 
 struct nvme_host {
@@ -105,6 +116,7 @@ struct nvme_host {
 
 	char *hostnqn;
 	char *hostid;
+	char *dhchap_key;
 };
 
 struct nvme_root {
